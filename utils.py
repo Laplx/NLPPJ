@@ -84,7 +84,8 @@ class Score:
         # map to ids
         tokens = elmo_tokenizer.tokenize(sentence)
         token_ids = elmo_tokenizer.convert_tokens_to_ids(tokens)
-        input_ids = [elmo_tokenizer.cls_token_id] + token_ids + [elmo_tokenizer.sep_token_id]
+        input_ids = token_ids  # ELMo does not use [CLS] and [SEP] tokens
+        # input_ids = [elmo_tokenizer.cls_token_id] + token_ids + [elmo_tokenizer.sep_token_id]
         seq_len = len(input_ids)
         input_ids_tensor = torch.tensor([input_ids]).to(self.device)
 
