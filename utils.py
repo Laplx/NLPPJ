@@ -1,18 +1,21 @@
 # utils.py
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn.functional as F    
+import math
 
 
 class Score:
-    def __init__(self, bert_model=None, bert_tokenizer=None, elmo_model=None, elmo_tokenizer=None):
+    def __init__(self, bert_model=None, bert_tokenizer=None, elmo_model=None, elmo_tokenizer=None, gpt2_model=None, gpt2_tokenizer=None):
         """
-        Initialize the Score class with BERT and ELMo models and tokenizers.
+        Initialize the Score class with BERT 、ELMo 、 gpt-2 models and tokenizers.
         """
         self.bert_model = bert_model
         self.elmo_model = elmo_model
         self.bert_tokenizer = bert_tokenizer
         self.elmo_tokenizer = elmo_tokenizer
+        self.gpt2_model = gpt2_model
+        self.gpt2_tokenizer = gpt2_tokenizer
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -122,26 +125,73 @@ class Score:
         score = torch.exp(log_score)
         
         return score.item()
+    
+    def gpt2_score(self, sentence, gpt2_model=None, gpt2_tokenizer=None):
+        """
+        Compute the GPT-2 score of a sentence by evaluating token-wise conditional probabilities.
+        :param sentence: str, input sentence
+        :return: perplexity-style score (lower = more likely)
+        """
+
+        if gpt2_model is None:
+            gpt2_model = self.gpt2_model
+        if gpt2_tokenizer is None:
+            gpt2_tokenizer = self.gpt2_tokenizer
+
+        gpt2_model.to(self.device)
+        gpt2_model.eval()
+
+        # Tokenize and encode sentence
+        tokens = gpt2_tokenizer.tokenize(sentence)
+        token_ids = gpt2_tokenizer.convert_tokens_to_ids(tokens)
+        input_ids = torch.tensor([token_ids]).to(self.device)  # shape: (1, seq_len)
+
+        log_probs = []
+
+        with torch.no_grad():
+            for i in range(1, input_ids.size(1)):
+                # Get prefix up to i tokens (i.e., w_0 ... w_{i-1})
+                prefix = input_ids[:, :i]  # shape: (1, i)
+
+                # Predict the next token distribution (i.e., P(w_i | w_<i))
+                outputs = gpt2_model(prefix)
+                logits = outputs.logits  # shape: (1, i, vocab_size)
+                last_token_logits = logits[0, -1]  # shape: (vocab_size,)
+
+                probs = F.softmax(last_token_logits, dim=-1)
+                target_token = input_ids[0, i]  # actual w_i
+                p_wi = probs[target_token]
+
+                log_probs.append(torch.log(p_wi + 1e-10))  # add epsilon to avoid log(0)
+
+        # 计算平均负 log 概率并指数化（类似困惑度）
+        log_score = -torch.stack(log_probs).mean()
+        score = torch.exp(log_score)
+
+        return score.item()
+
 
     def select_best_sentence(self, sentences, model_type):
         """
         Choose the best sentence based on the model type.
         
         :param sentences: list of sentences to evaluate
-        :param model_type: str, type of model to use ('bert', 'elmo', 'ft_elmo')
+        :param model_type: str, type of model to use ('bert', 'elmo', 'ft_elmo', 'gpt2')
         
         :return: index of the best sentence
         """
-        if model_type not in ['bert', 'elmo', 'ft_elmo']:
-            raise ValueError("model_type must be 'bert', 'elmo' or 'ft_elmo'")
+        if model_type not in ['bert', 'elmo', 'ft_elmo', 'gpt2']:
+            raise ValueError("model_type must be 'bert', 'elmo', 'ft_elmo', or 'gpt2'")
 
         scores = []
         if model_type == 'bert':
             compute_fn = self.bert_score
         elif model_type == 'elmo':
             compute_fn = self.elmo_score
-        else:
+        elif model_type == 'ft_elmo':
             compute_fn = self.ft_elmo_score
+        else:
+            compute_fn = self.gpt2_score
 
         for sentence in sentences:
             score = compute_fn(sentence)
@@ -168,4 +218,7 @@ if __name__ == "__main__":
     print(f"Best sentence: {best_sentence}")
     print("\nUsing ELMo:")
     best_sentence = scorer.select_best_sentence(sentences, model_type='elmo')
+    print(f"Best sentence: {best_sentence}")
+    print("\nUsing gpt2:")
+    best_sentence = scorer.select_best_sentence(sentences, model_type='gpt2')
     print(f"Best sentence: {best_sentence}")
